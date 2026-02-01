@@ -699,9 +699,10 @@ Decoded parameters are stored in `decoded_params` as JSON:
 {
   transaction_type: 'wallet_admin',
   decoded_params: {
-    method: 'addOwner',
-    owner: '0x...',
-    newThreshold: 2
+    function: 'addOwner',
+    args: {
+      owner: '0x1234...'
+    }
   }
 }
 ```
