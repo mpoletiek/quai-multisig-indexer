@@ -202,8 +202,30 @@ export class Indexer {
         const safeBlock = currentBlock - config.indexer.confirmations;
 
         if (state.lastIndexedBlock < safeBlock) {
-          await this.indexBlockRange(state.lastIndexedBlock + 1, safeBlock);
-          await supabase.updateIndexerState(safeBlock);
+          const blocksToIndex = safeBlock - state.lastIndexedBlock;
+
+          // If gap exceeds batch size, use backfill (handles database resets)
+          if (blocksToIndex > config.indexer.batchSize) {
+            logger.info(
+              {
+                lastIndexed: state.lastIndexedBlock,
+                safeBlock,
+                blocksToIndex,
+              },
+              'Large gap detected, triggering backfill'
+            );
+
+            // Reload tracked wallets (may have been cleared by database reset)
+            const wallets = await supabase.getAllWalletAddresses();
+            this.trackedWallets.clear();
+            wallets.forEach((w) => this.trackedWallets.add(w.toLowerCase()));
+            health.setTrackedWalletsCount(this.trackedWallets.size);
+
+            await this.backfill(state.lastIndexedBlock + 1, safeBlock);
+          } else {
+            await this.indexBlockRange(state.lastIndexedBlock + 1, safeBlock);
+            await supabase.updateIndexerState(safeBlock);
+          }
         }
       } catch (error) {
         logger.error({ error }, 'Poll error');

@@ -105,6 +105,22 @@ const spent = remaining > dailyLimit ? '0' : (dailyLimit - remaining).toString()
 
 ---
 
+### 9. Database Reset Detection in Poll Loop ✅
+
+**Location:** [src/indexer.ts](src/indexer.ts) - `poll`
+
+**Change:** Modified the `poll()` method to detect when the gap between `lastIndexedBlock` and the current safe block exceeds `batchSize`. When a large gap is detected (e.g., after a database reset), it:
+1. Logs the condition with details
+2. Reloads tracked wallets (which may have been cleared)
+3. Triggers the `backfill()` method instead of `indexBlockRange()` directly
+
+This prevents the "filter range must be less than or equal to 10000" RPC error that occurred when the database was reset while the indexer was running.
+
+**Files Modified:**
+- `src/indexer.ts` - Updated `poll()` with gap detection and backfill trigger
+
+---
+
 ## Audit Information
 
 - **Audit Date:** February 1, 2026
@@ -112,4 +128,4 @@ const spent = remaining > dailyLimit ? '0' : (dailyLimit - remaining).toString()
 - **Implementation Date:** February 1, 2026
 - **Overall Status:** All improvements implemented
 - **Critical Issues Found:** 0
-- **Items Implemented:** 8
+- **Items Implemented:** 9
