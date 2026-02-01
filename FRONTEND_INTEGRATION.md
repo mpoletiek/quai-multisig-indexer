@@ -10,6 +10,21 @@ The indexer continuously monitors the Quai blockchain for multisig wallet events
 2. **Subscribe to updates** - Get real-time notifications via Supabase Realtime
 3. **Display activity** - Show deposits, confirmations, and execution status
 
+## Multi-Network Support
+
+The indexer supports multiple networks (testnet, mainnet) using PostgreSQL schemas within a single Supabase project. Each network has its own isolated schema:
+
+```
+Supabase Project
+├── testnet (schema)
+│   ├── wallets, transactions, confirmations, etc.
+├── mainnet (schema)
+│   ├── wallets, transactions, confirmations, etc.
+└── public (schema - unused/legacy)
+```
+
+Your frontend should be configured to connect to the appropriate schema based on the network.
+
 ## Supabase Setup
 
 ### Install Dependencies
@@ -18,15 +33,94 @@ The indexer continuously monitors the Quai blockchain for multisig wallet events
 npm install @supabase/supabase-js
 ```
 
-### Initialize Client
+### Initialize Client (Single Network)
+
+For a frontend targeting a single network:
 
 ```typescript
 import { createClient } from '@supabase/supabase-js';
 
+// Configure schema based on target network
+const NETWORK_SCHEMA = process.env.VITE_NETWORK_SCHEMA || 'testnet'; // 'testnet' or 'mainnet'
+
 const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_ANON_KEY! // Use anon key, NOT service role key
+  process.env.VITE_SUPABASE_URL!,
+  process.env.VITE_SUPABASE_ANON_KEY!, // Use anon key, NOT service role key
+  {
+    db: {
+      schema: NETWORK_SCHEMA
+    }
+  }
 );
+```
+
+### Initialize Client (Multi-Network)
+
+For a frontend that supports network switching:
+
+```typescript
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+
+type NetworkSchema = 'testnet' | 'mainnet';
+
+// Create clients for each network
+function createNetworkClient(schema: NetworkSchema): SupabaseClient {
+  return createClient(
+    process.env.VITE_SUPABASE_URL!,
+    process.env.VITE_SUPABASE_ANON_KEY!,
+    {
+      db: { schema }
+    }
+  );
+}
+
+// Network-specific clients
+export const supabaseTestnet = createNetworkClient('testnet');
+export const supabaseMainnet = createNetworkClient('mainnet');
+
+// Or use a factory function
+export function getSupabaseClient(network: NetworkSchema): SupabaseClient {
+  return createNetworkClient(network);
+}
+```
+
+### React Context for Network Selection
+
+```typescript
+import { createContext, useContext, useState, ReactNode } from 'react';
+import { SupabaseClient } from '@supabase/supabase-js';
+
+type Network = 'testnet' | 'mainnet';
+
+interface NetworkContextValue {
+  network: Network;
+  setNetwork: (network: Network) => void;
+  supabase: SupabaseClient;
+}
+
+const NetworkContext = createContext<NetworkContextValue | null>(null);
+
+export function NetworkProvider({ children }: { children: ReactNode }) {
+  const [network, setNetwork] = useState<Network>('testnet');
+
+  const supabase = createClient(
+    process.env.VITE_SUPABASE_URL!,
+    process.env.VITE_SUPABASE_ANON_KEY!,
+    { db: { schema: network } }
+  );
+
+  return (
+    <NetworkContext.Provider value={{ network, setNetwork, supabase }}>
+      {children}
+    </NetworkContext.Provider>
+  );
+}
+
+export function useNetwork() {
+  const context = useContext(NetworkContext);
+  if (!context) throw new Error('useNetwork must be used within NetworkProvider');
+  return context;
+}
 ```
 
 **Important:** The frontend should use the **anon key** (public). The service role key is only for the indexer.
@@ -247,10 +341,42 @@ async function getRecoveryStatus(walletAddress: string) {
 
 Supabase Realtime enables live updates without polling. Subscribe to tables that matter for your UI.
 
+### Enable Realtime for Custom Schemas
+
+By default, Supabase Realtime only monitors the `public` schema. For custom schemas (`testnet`, `mainnet`), you need to enable Realtime on each table. Run this in the Supabase SQL Editor:
+
+```sql
+-- Enable realtime for testnet tables
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.wallets;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.wallet_owners;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.transactions;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.confirmations;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.deposits;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.wallet_modules;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.social_recoveries;
+ALTER PUBLICATION supabase_realtime ADD TABLE testnet.social_recovery_approvals;
+
+-- Enable realtime for mainnet tables
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.wallets;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.wallet_owners;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.transactions;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.confirmations;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.deposits;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.wallet_modules;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.social_recoveries;
+ALTER PUBLICATION supabase_realtime ADD TABLE mainnet.social_recovery_approvals;
+```
+
+Alternatively, enable Realtime via the Supabase Dashboard: **Database → Replication → Add tables to `supabase_realtime`**.
+
+**Important:** The `schema` parameter in subscriptions must match your network schema (`testnet` or `mainnet`).
+
 ### Subscribe to Wallet Transactions
 
 ```typescript
 function subscribeToTransactions(
+  supabase: SupabaseClient,
+  schema: 'testnet' | 'mainnet',
   walletAddress: string,
   onInsert: (tx: Transaction) => void,
   onUpdate: (tx: Transaction) => void
@@ -261,7 +387,7 @@ function subscribeToTransactions(
       'postgres_changes',
       {
         event: 'INSERT',
-        schema: 'public',
+        schema: schema, // Use network schema, not 'public'
         table: 'transactions',
         filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
       },
@@ -271,7 +397,7 @@ function subscribeToTransactions(
       'postgres_changes',
       {
         event: 'UPDATE',
-        schema: 'public',
+        schema: schema,
         table: 'transactions',
         filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
       },
@@ -288,6 +414,8 @@ function subscribeToTransactions(
 
 ```typescript
 function subscribeToConfirmations(
+  supabase: SupabaseClient,
+  schema: 'testnet' | 'mainnet',
   walletAddress: string,
   onConfirmation: (conf: Confirmation) => void
 ) {
@@ -297,7 +425,7 @@ function subscribeToConfirmations(
       'postgres_changes',
       {
         event: '*', // INSERT or UPDATE
-        schema: 'public',
+        schema: schema,
         table: 'confirmations',
         filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
       },
@@ -313,6 +441,8 @@ function subscribeToConfirmations(
 
 ```typescript
 function subscribeToDeposits(
+  supabase: SupabaseClient,
+  schema: 'testnet' | 'mainnet',
   walletAddress: string,
   onDeposit: (deposit: Deposit) => void
 ) {
@@ -322,7 +452,7 @@ function subscribeToDeposits(
       'postgres_changes',
       {
         event: 'INSERT',
-        schema: 'public',
+        schema: schema,
         table: 'deposits',
         filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
       },
@@ -338,6 +468,8 @@ function subscribeToDeposits(
 
 ```typescript
 function subscribeToRecovery(
+  supabase: SupabaseClient,
+  schema: 'testnet' | 'mainnet',
   walletAddress: string,
   onRecoveryChange: (recovery: SocialRecovery) => void,
   onApprovalChange: (approval: RecoveryApproval) => void
@@ -348,7 +480,7 @@ function subscribeToRecovery(
       'postgres_changes',
       {
         event: '*',
-        schema: 'public',
+        schema: schema,
         table: 'social_recoveries',
         filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
       },
@@ -358,7 +490,7 @@ function subscribeToRecovery(
       'postgres_changes',
       {
         event: '*',
-        schema: 'public',
+        schema: schema,
         table: 'social_recovery_approvals',
         filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
       },
@@ -578,9 +710,10 @@ Decoded parameters are stored in `decoded_params` as JSON:
 
 ```typescript
 import { useEffect, useState } from 'react';
-import { supabase } from './supabase';
+import { useNetwork } from './NetworkContext'; // See NetworkProvider above
 
 function useWalletTransactions(walletAddress: string) {
+  const { supabase, network } = useNetwork();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -599,14 +732,14 @@ function useWalletTransactions(walletAddress: string) {
 
     fetchTransactions();
 
-    // Subscribe to changes
+    // Subscribe to changes (use network schema, not 'public')
     const channel = supabase
       .channel(`transactions:${walletAddress}`)
       .on(
         'postgres_changes',
         {
           event: '*',
-          schema: 'public',
+          schema: network, // 'testnet' or 'mainnet'
           table: 'transactions',
           filter: `wallet_address=eq.${walletAddress.toLowerCase()}`
         },
@@ -629,7 +762,7 @@ function useWalletTransactions(walletAddress: string) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [walletAddress]);
+  }, [walletAddress, supabase, network]);
 
   return { transactions, loading };
 }
@@ -732,13 +865,121 @@ const transactions = await safeQuery(
 );
 ```
 
+## Indexer Health Check
+
+The indexer exposes a health check endpoint that frontends can use to:
+- Check if the indexer is running before making queries
+- Display sync status to users
+- Show how far behind the chain the indexer is
+
+### Health Check Endpoint
+
+```typescript
+const INDEXER_HEALTH_URL = process.env.VITE_INDEXER_URL || 'http://localhost:3000';
+
+interface HealthStatus {
+  status: 'healthy' | 'unhealthy';
+  timestamp: string;
+  checks: {
+    quaiRpc: { status: 'pass' | 'fail'; message?: string };
+    supabase: { status: 'pass' | 'fail'; message?: string };
+    indexer: { status: 'pass' | 'fail'; message?: string };
+  };
+  details: {
+    currentBlock: number | null;
+    lastIndexedBlock: number | null;
+    blocksBehind: number | null;
+    isSyncing: boolean;
+    trackedWallets: number;
+  };
+}
+
+async function getIndexerHealth(): Promise<HealthStatus | null> {
+  try {
+    const response = await fetch(`${INDEXER_HEALTH_URL}/health`);
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+```
+
+### Display Sync Status
+
+```typescript
+function useSyncStatus() {
+  const [status, setStatus] = useState<HealthStatus | null>(null);
+
+  useEffect(() => {
+    async function checkHealth() {
+      const health = await getIndexerHealth();
+      setStatus(health);
+    }
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000); // Check every 30s
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return {
+    isHealthy: status?.status === 'healthy',
+    isSyncing: status?.details.isSyncing ?? false,
+    blocksBehind: status?.details.blocksBehind ?? null,
+    lastIndexedBlock: status?.details.lastIndexedBlock ?? null,
+  };
+}
+```
+
+### Sync Status Component Example
+
+```tsx
+function SyncStatusBadge() {
+  const { isHealthy, isSyncing, blocksBehind } = useSyncStatus();
+
+  if (!isHealthy) {
+    return <Badge color="red">Indexer Offline</Badge>;
+  }
+
+  if (isSyncing) {
+    return <Badge color="yellow">Syncing...</Badge>;
+  }
+
+  if (blocksBehind && blocksBehind > 10) {
+    return <Badge color="yellow">{blocksBehind} blocks behind</Badge>;
+  }
+
+  return <Badge color="green">Synced</Badge>;
+}
+```
+
 ## Environment Variables
 
 Frontend `.env`:
 
 ```bash
+# Supabase connection
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
+
+# Network configuration
+VITE_NETWORK_SCHEMA=testnet  # 'testnet' or 'mainnet'
+
+# Optional: Indexer health check URL
+VITE_INDEXER_URL=http://localhost:3001  # testnet: 3001, mainnet: 3002
 ```
 
-**Never expose the service role key in frontend code.**
+**Security Notes:**
+- **Never expose the service role key in frontend code** - use only the anon key
+- The anon key is safe to expose; it only has read access to public data
+- The same Supabase project/keys work for both networks (schemas provide isolation)
+
+## Network-Specific Configuration
+
+| Setting | Testnet | Mainnet |
+|---------|---------|---------|
+| `VITE_NETWORK_SCHEMA` | `testnet` | `mainnet` |
+| `VITE_INDEXER_URL` | `http://localhost:3001` | `http://localhost:3002` |
+| Quai RPC (for contract calls) | `https://rpc.orchard.quai.network/cyprus1` | `https://rpc.quai.network/cyprus1` |
+
+For production deployments, replace localhost URLs with your actual indexer endpoints.

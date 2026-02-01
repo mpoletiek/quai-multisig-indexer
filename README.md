@@ -4,11 +4,12 @@ A blockchain indexing service for Quai Network multisig wallets. Indexes on-chai
 
 ## Features
 
-- Indexes 26 event types from MultisigWallet, ProxyFactory, and module contracts
+- Indexes 25 event types from MultisigWallet, ProxyFactory, and module contracts
 - Real-time updates via Supabase Realtime subscriptions
 - Historical backfill with resume capability
 - Transaction type decoding (transfer, wallet_admin, module_config, etc.)
 - Social recovery, daily limit, and whitelist module support
+- Health check endpoint for monitoring and orchestration
 - Graceful shutdown and error recovery
 
 ## Architecture
@@ -68,6 +69,11 @@ CONFIRMATIONS=2
 LOG_LEVEL=info
 LOG_TO_FILE=false
 NODE_ENV=development
+
+# Optional - Health check
+HEALTH_CHECK_ENABLED=true
+HEALTH_CHECK_PORT=3000
+HEALTH_MAX_BLOCKS_BEHIND=100
 ```
 
 ### Database Setup
@@ -109,7 +115,8 @@ src/
 ├── services/
 │   ├── quai.ts           # Quai RPC client with retry
 │   ├── supabase.ts       # Database operations
-│   └── decoder.ts        # Event & calldata decoding
+│   ├── decoder.ts        # Event & calldata decoding
+│   └── health.ts         # Health check HTTP server
 ├── types/
 │   └── index.ts          # TypeScript interfaces
 └── utils/
@@ -181,6 +188,9 @@ The indexer decodes calldata for proposed transactions:
 | `CONFIRMATIONS` | No | `2` | Blocks to wait before processing |
 | `LOG_LEVEL` | No | `info` | Logging level |
 | `LOG_TO_FILE` | No | `false` | Enable file logging with rotation |
+| `HEALTH_CHECK_ENABLED` | No | `true` | Enable health check HTTP server |
+| `HEALTH_CHECK_PORT` | No | `3000` | Health check server port |
+| `HEALTH_MAX_BLOCKS_BEHIND` | No | `100` | Max blocks behind before unhealthy |
 
 ## Logging
 
@@ -189,6 +199,41 @@ The indexer decodes calldata for proposed transactions:
   - Daily rotation + 10MB size limit
   - Separate error log file
   - Logs written to `logs/` directory
+
+## Health Check
+
+The indexer exposes HTTP endpoints for health monitoring:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Full health status with details |
+| `GET /ready` | Kubernetes readiness probe |
+| `GET /live` | Kubernetes liveness probe |
+
+### Health Response
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "checks": {
+    "quaiRpc": { "status": "pass" },
+    "supabase": { "status": "pass" },
+    "indexer": { "status": "pass" }
+  },
+  "details": {
+    "currentBlock": 5500000,
+    "lastIndexedBlock": 5499998,
+    "blocksBehind": 0,
+    "isSyncing": false,
+    "trackedWallets": 42
+  }
+}
+```
+
+The `/health` endpoint returns:
+- `200 OK` when all checks pass
+- `503 Service Unavailable` when any check fails
 
 ## Monitoring
 

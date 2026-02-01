@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { quai } from './services/quai.js';
 import { supabase } from './services/supabase.js';
+import { health } from './services/health.js';
 import {
   decodeEvent,
   getAllEventTopics,
@@ -11,6 +12,9 @@ import { handleEvent } from './events/index.js';
 import { logger } from './utils/logger.js';
 import { getModuleContractAddresses } from './utils/modules.js';
 
+// Maximum addresses per getLogs call to avoid RPC limits
+const GET_LOGS_ADDRESS_CHUNK_SIZE = 100;
+
 export class Indexer {
   private isRunning = false;
   private trackedWallets: Set<string> = new Set();
@@ -18,10 +22,16 @@ export class Indexer {
   async start(): Promise<void> {
     logger.info('Starting indexer...');
 
+    // Start health check server
+    await health.start();
+
     // Load tracked wallets
     const wallets = await supabase.getAllWalletAddresses();
     wallets.forEach((w) => this.trackedWallets.add(w.toLowerCase()));
     logger.info({ count: this.trackedWallets.size }, 'Loaded tracked wallets');
+
+    // Update health service with wallet count
+    health.setTrackedWalletsCount(this.trackedWallets.size);
 
     // Log module contracts being watched
     const moduleContracts = getModuleContractAddresses();
@@ -57,11 +67,14 @@ export class Indexer {
 
     // Start real-time indexing
     this.isRunning = true;
+    health.setIndexerRunning(true);
     this.poll();
   }
 
   async stop(): Promise<void> {
     this.isRunning = false;
+    health.setIndexerRunning(false);
+    await health.stop();
     await quai.unsubscribe();
     logger.info('Indexer stopped');
   }
@@ -79,10 +92,10 @@ export class Indexer {
         await this.indexBlockRange(start, end);
         await supabase.updateIndexerState(end);
 
-        const progress = (
-          ((end - fromBlock) / (toBlock - fromBlock)) *
-          100
-        ).toFixed(1);
+        const totalBlocks = toBlock - fromBlock;
+        const progress = totalBlocks > 0
+          ? (((end - fromBlock) / totalBlocks) * 100).toFixed(1)
+          : '100.0';
         logger.info(
           { start, end, progress: `${progress}%` },
           'Backfill progress'
@@ -118,18 +131,24 @@ export class Indexer {
       allLogs.push({ log, priority: 0 });
     }
 
-    // 2. Get events from all tracked wallets
+    // 2. Get events from all tracked wallets (chunked to avoid RPC limits)
     // Note: topics must be [[sig1, sig2, ...]] to match ANY signature in topic0
     if (this.trackedWallets.size > 0) {
-      const walletLogs = await quai.getLogs(
-        Array.from(this.trackedWallets),
-        [getAllEventTopics()],
-        fromBlock,
-        toBlock
-      );
+      const walletAddresses = Array.from(this.trackedWallets);
 
-      for (const log of walletLogs) {
-        allLogs.push({ log, priority: 1 });
+      // Chunk addresses to avoid RPC provider limits
+      for (let i = 0; i < walletAddresses.length; i += GET_LOGS_ADDRESS_CHUNK_SIZE) {
+        const chunk = walletAddresses.slice(i, i + GET_LOGS_ADDRESS_CHUNK_SIZE);
+        const walletLogs = await quai.getLogs(
+          chunk,
+          [getAllEventTopics()],
+          fromBlock,
+          toBlock
+        );
+
+        for (const log of walletLogs) {
+          allLogs.push({ log, priority: 1 });
+        }
       }
     }
 
@@ -168,6 +187,7 @@ export class Indexer {
         if (event.name === 'WalletCreated' || event.name === 'WalletRegistered') {
           const walletAddress = event.args.wallet as string;
           this.trackedWallets.add(walletAddress.toLowerCase());
+          health.setTrackedWalletsCount(this.trackedWallets.size);
         }
         await handleEvent(event);
       }

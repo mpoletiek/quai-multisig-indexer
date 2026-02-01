@@ -11,6 +11,9 @@ import { handleEvent } from './events/index.js';
 import { logger } from './utils/logger.js';
 import { getModuleContractAddresses } from './utils/modules.js';
 
+// Maximum addresses per getLogs call to avoid RPC limits
+const GET_LOGS_ADDRESS_CHUNK_SIZE = 100;
+
 /**
  * Standalone backfill script for historical data indexing.
  * Run with: npm run backfill
@@ -76,17 +79,23 @@ async function backfill(): Promise<void> {
         priority: number;
       }> = [];
 
-      // Get events from tracked wallets
+      // Get events from tracked wallets (chunked to avoid RPC limits)
       if (trackedWallets.size > 0) {
-        const walletLogs = await quai.getLogs(
-          Array.from(trackedWallets),
-          [getAllEventTopics()],
-          start,
-          end
-        );
+        const walletAddresses = Array.from(trackedWallets);
 
-        for (const log of walletLogs) {
-          allLogs.push({ log, priority: 1 });
+        // Chunk addresses to avoid RPC provider limits
+        for (let i = 0; i < walletAddresses.length; i += GET_LOGS_ADDRESS_CHUNK_SIZE) {
+          const chunk = walletAddresses.slice(i, i + GET_LOGS_ADDRESS_CHUNK_SIZE);
+          const walletLogs = await quai.getLogs(
+            chunk,
+            [getAllEventTopics()],
+            start,
+            end
+          );
+
+          for (const log of walletLogs) {
+            allLogs.push({ log, priority: 1 });
+          }
         }
       }
 
@@ -127,7 +136,10 @@ async function backfill(): Promise<void> {
       await supabase.updateIndexerState(end);
       processedBlocks = end - fromBlock;
 
-      const progress = ((processedBlocks / (toBlock - fromBlock)) * 100).toFixed(1);
+      const totalBlocks = toBlock - fromBlock;
+      const progress = totalBlocks > 0
+        ? ((processedBlocks / totalBlocks) * 100).toFixed(1)
+        : '100.0';
       logger.info(
         {
           start,

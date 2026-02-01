@@ -12,6 +12,8 @@ export const config = {
   supabase: {
     url: process.env.SUPABASE_URL!,
     serviceKey: process.env.SUPABASE_SERVICE_KEY!,
+    // Schema for multi-network support (testnet, mainnet, or public for legacy)
+    schema: process.env.SUPABASE_SCHEMA || 'public',
   },
 
   // Contracts
@@ -29,6 +31,24 @@ export const config = {
     pollInterval: parseInt(process.env.POLL_INTERVAL || '5000'),
     startBlock: parseInt(process.env.START_BLOCK || '0'),
     confirmations: parseInt(process.env.CONFIRMATIONS || '2'),
+  },
+
+  // Health check settings
+  health: {
+    enabled: process.env.HEALTH_CHECK_ENABLED !== 'false',
+    port: parseInt(process.env.HEALTH_CHECK_PORT || '3000'),
+    maxBlocksBehind: parseInt(process.env.HEALTH_MAX_BLOCKS_BEHIND || '100'),
+  },
+
+  // RPC rate limiting
+  rateLimit: {
+    requestsPerWindow: parseInt(process.env.RATE_LIMIT_REQUESTS || '50'),
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '1000'),
+  },
+
+  // Caching
+  cache: {
+    timestampCacheSize: parseInt(process.env.TIMESTAMP_CACHE_SIZE || '1000'),
   },
 };
 

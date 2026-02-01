@@ -144,7 +144,7 @@ export interface DailyLimitState {
 
 export interface ModuleTransaction {
   walletAddress: string;
-  moduleType: 'daily_limit' | 'whitelist';
+  moduleType: 'daily_limit' | 'whitelist' | 'social_recovery';
   moduleAddress: string;
   toAddress: string;
   value: string;

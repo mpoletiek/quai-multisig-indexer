@@ -121,16 +121,16 @@ async function handleWalletCreated(event: DecodedEvent): Promise<void> {
     createdAtTx: event.transactionHash,
   });
 
-  // Index all owners
-  for (const owner of owners) {
-    await supabase.addOwner({
+  // Index all owners in a single batch insert
+  await supabase.addOwnersBatch(
+    owners.map((owner) => ({
       walletAddress: wallet,
       ownerAddress: owner,
       addedAtBlock: event.blockNumber,
       addedAtTx: event.transactionHash,
       isActive: true,
-    });
-  }
+    }))
+  );
 
   logger.info({ wallet, owners: owners.length, threshold }, 'Wallet created');
 }
@@ -162,16 +162,16 @@ async function handleWalletRegistered(event: DecodedEvent): Promise<void> {
       createdAtTx: event.transactionHash,
     });
 
-    // Index all owners
-    for (const owner of ownerAddresses) {
-      await supabase.addOwner({
+    // Index all owners in a single batch insert
+    await supabase.addOwnersBatch(
+      ownerAddresses.map((owner) => ({
         walletAddress: wallet,
         ownerAddress: owner,
         addedAtBlock: event.blockNumber,
         addedAtTx: event.transactionHash,
         isActive: true,
-      });
-    }
+      }))
+    );
 
     logger.info({ wallet, owners: ownerAddresses.length, threshold: thresholdValue }, 'Wallet registered');
   } catch (error) {
@@ -182,11 +182,41 @@ async function handleWalletRegistered(event: DecodedEvent): Promise<void> {
 
 // Helper to decode address array from ABI-encoded response
 function decodeAddressArray(hexData: string): string[] {
+  // Validate input
+  if (!hexData || typeof hexData !== 'string') {
+    throw new Error('Invalid ABI-encoded address array: data is null or not a string');
+  }
+
+  if (!hexData.startsWith('0x')) {
+    throw new Error('Invalid ABI-encoded address array: missing 0x prefix');
+  }
+
+  // Minimum length: 0x (2) + offset (64) + length (64) = 130 chars
+  if (hexData.length < 130) {
+    throw new Error(`Invalid ABI-encoded address array: data too short (${hexData.length} chars, need at least 130)`);
+  }
+
   // Skip 0x prefix and first 64 chars (offset to array data)
   const data = hexData.slice(2);
   // Get array length (next 64 chars = 32 bytes)
   const lengthHex = data.slice(64, 128);
   const length = parseInt(lengthHex, 16);
+
+  // Sanity check on length
+  if (isNaN(length) || length < 0 || length > 1000) {
+    throw new Error(`Invalid ABI-encoded address array: unreasonable length ${length}`);
+  }
+
+  // Handle empty array case
+  if (length === 0) {
+    return [];
+  }
+
+  // Validate we have enough data for all addresses
+  const expectedLength = 128 + (length * 64);
+  if (data.length < expectedLength) {
+    throw new Error(`Invalid ABI-encoded address array: expected ${expectedLength} chars for ${length} addresses, got ${data.length}`);
+  }
 
   const addresses: string[] = [];
   for (let i = 0; i < length; i++) {
@@ -448,10 +478,17 @@ async function handleRecoveryInitiated(event: DecodedEvent): Promise<void> {
   const config = await supabase.getRecoveryConfig(wallet);
   const recoveryPeriod = config?.recoveryPeriod || 0;
 
-  // Calculate execution time (current block time + recovery period)
-  // For now, we use a rough estimate based on block number
-  // In production, you'd want to get the actual block timestamp
-  const executionTime = Math.floor(Date.now() / 1000) + recoveryPeriod;
+  // Get the actual block timestamp for accurate execution time calculation
+  let executionTime: number;
+  try {
+    const blockTimestamp = await quai.getBlockTimestamp(event.blockNumber);
+    executionTime = blockTimestamp + recoveryPeriod;
+  } catch (error) {
+    // Fallback to current time if block timestamp unavailable
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.warn({ error: errorMessage, blockNumber: event.blockNumber }, 'Failed to get block timestamp, using current time');
+    executionTime = Math.floor(Date.now() / 1000) + recoveryPeriod;
+  }
 
   await supabase.upsertRecovery({
     walletAddress: wallet,
