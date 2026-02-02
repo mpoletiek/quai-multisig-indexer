@@ -3,7 +3,7 @@
  * Uses quais library for Quai Network address validation.
  */
 
-import { isQuaiAddress, getAddress } from 'quais';
+import { isQuaiAddress } from 'quais';
 
 /**
  * Validates that a string is a valid Quai address.
@@ -26,12 +26,12 @@ export function isValidAddress(address: unknown): address is string {
 }
 
 /**
- * Validates and normalizes an address to its checksummed format.
+ * Validates and normalizes an address to lowercase.
  * Throws an error if the address is invalid.
  *
  * @param address - The address string to validate and normalize
  * @param fieldName - Name of the field for error messages (e.g., "walletAddress", "ownerAddress")
- * @returns The checksummed address
+ * @returns The lowercase address
  * @throws Error if the address is invalid
  */
 export function validateAndNormalizeAddress(address: unknown, fieldName: string): string {
@@ -40,7 +40,7 @@ export function validateAndNormalizeAddress(address: unknown, fieldName: string)
       `Invalid ${fieldName}: expected valid Quai address, got "${String(address)}"`
     );
   }
-  return getAddress(address);
+  return address.toLowerCase();
 }
 
 /**
