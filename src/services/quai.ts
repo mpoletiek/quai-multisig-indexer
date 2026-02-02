@@ -1,7 +1,7 @@
 import { quais, FetchRequest } from 'quais';
 import { config } from '../config.js';
-import { logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
+import { logger } from '../utils/logger.js';
 
 class QuaiService {
   private wsProvider: quais.WebSocketProvider | null = null;
@@ -10,7 +10,8 @@ class QuaiService {
   // Rate limiting state
   private requestTimestamps: number[] = [];
 
-  // Block timestamp cache (LRU-style using Map insertion order)
+  // Block timestamp cache with proper LRU eviction
+  // Map maintains insertion order; we re-insert on access to maintain LRU
   private timestampCache: Map<number, number> = new Map();
 
   constructor() {
@@ -63,10 +64,17 @@ class QuaiService {
     toBlock: number
   ): Promise<quais.Log[]> {
     await this.rateLimit();
+
+    // Normalize addresses to lowercase for RPC compatibility
+    // Some RPC providers are case-sensitive when filtering by address
+    const normalizedAddress = Array.isArray(address)
+      ? address.map(a => a.toLowerCase())
+      : address.toLowerCase();
+
     return withRetry(async () => {
       const req = new FetchRequest(this.rpcUrl);
       const params = {
-        address,
+        address: normalizedAddress,
         topics,
         fromBlock: '0x' + fromBlock.toString(16),
         toBlock: '0x' + toBlock.toString(16),
@@ -83,6 +91,11 @@ class QuaiService {
 
       if (json.error) {
         throw new Error(`RPC Error: ${json.error.message || JSON.stringify(json.error)}`);
+      }
+
+      // Validate response format
+      if (json.result !== null && !Array.isArray(json.result)) {
+        throw new Error(`Unexpected RPC response: result is not an array`);
       }
 
       // Convert raw logs to quais.Log format
@@ -127,6 +140,9 @@ class QuaiService {
     // Check cache first
     const cached = this.timestampCache.get(blockNumber);
     if (cached !== undefined) {
+      // Re-insert to maintain LRU order (moves to end of Map)
+      this.timestampCache.delete(blockNumber);
+      this.timestampCache.set(blockNumber, cached);
       return cached;
     }
 

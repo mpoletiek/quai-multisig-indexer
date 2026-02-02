@@ -1,4 +1,3 @@
-import { getAddress } from 'quais';
 import { config } from './config.js';
 import { quai } from './services/quai.js';
 import { supabase } from './services/supabase.js';
@@ -18,8 +17,8 @@ const GET_LOGS_ADDRESS_CHUNK_SIZE = 100;
 
 export class Indexer {
   private isRunning = false;
-  // Map from lowercase address (for deduplication) to checksummed address (for RPC)
-  private trackedWallets: Map<string, string> = new Map();
+  // Set of lowercase wallet addresses for tracking
+  private trackedWallets: Set<string> = new Set();
 
   async start(): Promise<void> {
     logger.info('Starting indexer...');
@@ -27,9 +26,9 @@ export class Indexer {
     // Start health check server
     await health.start();
 
-    // Load tracked wallets
+    // Load tracked wallets (lowercase for consistency)
     const wallets = await supabase.getAllWalletAddresses();
-    wallets.forEach((w) => this.trackedWallets.set(w.toLowerCase(), getAddress(w)));
+    wallets.forEach((w) => this.trackedWallets.add(w.toLowerCase()));
     logger.info({ count: this.trackedWallets.size }, 'Loaded tracked wallets');
 
     // Update health service with wallet count
@@ -116,12 +115,8 @@ export class Indexer {
     fromBlock: number,
     toBlock: number
   ): Promise<void> {
-    const allLogs: Array<{
-      log: Awaited<ReturnType<typeof quai.getLogs>>[number];
-      priority: number;
-    }> = [];
-
-    // 1. Get factory events (new wallet deployments/registrations) - highest priority
+    // 1. Get and process factory events FIRST (new wallet deployments/registrations)
+    // This ensures new wallets are tracked before we fetch their events
     const factoryLogs = await quai.getLogs(
       config.contracts.proxyFactory,
       [[EVENT_SIGNATURES.WalletCreated, EVENT_SIGNATURES.WalletRegistered]],
@@ -130,13 +125,28 @@ export class Indexer {
     );
 
     for (const log of factoryLogs) {
-      allLogs.push({ log, priority: 0 });
+      const event = decodeEvent(log);
+      if (event) {
+        await handleEvent(event);
+        if (event.name === 'WalletCreated' || event.name === 'WalletRegistered') {
+          const walletAddress = event.args.wallet as string;
+          this.trackedWallets.add(walletAddress.toLowerCase());
+          health.setTrackedWalletsCount(this.trackedWallets.size);
+          logger.info({ wallet: walletAddress, block: event.blockNumber }, 'Discovered new wallet');
+        }
+      }
     }
 
-    // 2. Get events from all tracked wallets (chunked to avoid RPC limits)
+    // 2. Now fetch wallet and module events (new wallets are now tracked)
+    const allLogs: Array<{
+      log: Awaited<ReturnType<typeof quai.getLogs>>[number];
+      priority: number;
+    }> = [];
+
+    // Get events from all tracked wallets (chunked to avoid RPC limits)
     // Note: topics must be [[sig1, sig2, ...]] to match ANY signature in topic0
     if (this.trackedWallets.size > 0) {
-      const walletAddresses = Array.from(this.trackedWallets.values());
+      const walletAddresses = Array.from(this.trackedWallets);
 
       // Chunk addresses to avoid RPC provider limits
       for (let i = 0; i < walletAddresses.length; i += GET_LOGS_ADDRESS_CHUNK_SIZE) {
@@ -154,7 +164,7 @@ export class Indexer {
       }
     }
 
-    // 3. Get events from module contracts
+    // Get events from module contracts
     const moduleAddresses = getModuleContractAddresses();
     if (moduleAddresses.length > 0) {
       const moduleLogs = await quai.getLogs(
@@ -170,7 +180,6 @@ export class Indexer {
     }
 
     // Sort by block number, then log index, then priority
-    // This ensures factory events are processed first within the same block
     allLogs.sort((a, b) => {
       if (a.log.blockNumber !== b.log.blockNumber) {
         return a.log.blockNumber - b.log.blockNumber;
@@ -181,16 +190,10 @@ export class Indexer {
       return a.log.index - b.log.index;
     });
 
-    // Process all events
+    // Process wallet and module events
     for (const { log } of allLogs) {
       const event = decodeEvent(log);
       if (event) {
-        // Track new wallets from factory events
-        if (event.name === 'WalletCreated' || event.name === 'WalletRegistered') {
-          const walletAddress = event.args.wallet as string;
-          this.trackedWallets.set(walletAddress.toLowerCase(), getAddress(walletAddress));
-          health.setTrackedWalletsCount(this.trackedWallets.size);
-        }
         await handleEvent(event);
       }
     }
@@ -227,7 +230,7 @@ export class Indexer {
             // Reload tracked wallets (may have been cleared by database reset)
             const wallets = await supabase.getAllWalletAddresses();
             this.trackedWallets.clear();
-            wallets.forEach((w) => this.trackedWallets.set(w.toLowerCase(), getAddress(w)));
+            wallets.forEach((w) => this.trackedWallets.add(w.toLowerCase()));
             health.setTrackedWalletsCount(this.trackedWallets.size);
 
             await this.backfill(startBlock, safeBlock);
