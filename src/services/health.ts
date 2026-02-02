@@ -4,6 +4,13 @@ import { quai } from './quai.js';
 import { supabase } from './supabase.js';
 import { logger } from '../utils/logger.js';
 
+// Allowed CORS origins for health check endpoint
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',         // Local dev
+  'https://testnet.quaivault.org', // Testnet production
+  'https://quaivault.org',         // Mainnet production
+];
+
 export interface HealthStatus {
   status: 'healthy' | 'unhealthy';
   timestamp: string;
@@ -39,6 +46,20 @@ class HealthService {
     this.isIndexerRunning = running;
   }
 
+  private getCorsHeaders(origin: string | undefined): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+      headers['Access-Control-Allow-Origin'] = origin;
+      headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
+      headers['Access-Control-Allow-Headers'] = 'Content-Type';
+    }
+
+    return headers;
+  }
+
   async start(): Promise<void> {
     if (!config.health.enabled) {
       logger.info('Health check endpoint disabled');
@@ -46,14 +67,24 @@ class HealthService {
     }
 
     this.server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+      const origin = req.headers.origin;
+      const corsHeaders = this.getCorsHeaders(origin);
+
+      // Handle CORS preflight requests
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, corsHeaders);
+        res.end();
+        return;
+      }
+
       if (req.url === '/health' && req.method === 'GET') {
-        await this.handleHealthCheck(res);
+        await this.handleHealthCheck(res, corsHeaders);
       } else if (req.url === '/ready' && req.method === 'GET') {
-        await this.handleReadinessCheck(res);
+        await this.handleReadinessCheck(res, corsHeaders);
       } else if (req.url === '/live' && req.method === 'GET') {
-        this.handleLivenessCheck(res);
+        this.handleLivenessCheck(res, corsHeaders);
       } else {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.writeHead(404, corsHeaders);
         res.end(JSON.stringify({ error: 'Not found' }));
       }
     });
@@ -86,15 +117,15 @@ class HealthService {
     }
   }
 
-  private async handleHealthCheck(res: ServerResponse): Promise<void> {
+  private async handleHealthCheck(res: ServerResponse, headers: Record<string, string>): Promise<void> {
     const health = await this.getHealthStatus();
     const statusCode = health.status === 'healthy' ? 200 : 503;
 
-    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    res.writeHead(statusCode, headers);
     res.end(JSON.stringify(health, null, 2));
   }
 
-  private async handleReadinessCheck(res: ServerResponse): Promise<void> {
+  private async handleReadinessCheck(res: ServerResponse, headers: Record<string, string>): Promise<void> {
     const health = await this.getHealthStatus();
     const isReady =
       health.checks.quaiRpc.status === 'pass' &&
@@ -102,12 +133,12 @@ class HealthService {
       health.checks.indexer.status === 'pass';
 
     const statusCode = isReady ? 200 : 503;
-    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    res.writeHead(statusCode, headers);
     res.end(JSON.stringify({ ready: isReady }));
   }
 
-  private handleLivenessCheck(res: ServerResponse): void {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+  private handleLivenessCheck(res: ServerResponse, headers: Record<string, string>): void {
+    res.writeHead(200, headers);
     res.end(JSON.stringify({ alive: true }));
   }
 
