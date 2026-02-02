@@ -256,7 +256,7 @@ async function handleTransactionProposed(event: DecodedEvent): Promise<void> {
     transactionType: decoded.transactionType,
     decodedParams: decoded.decodedParams,
     status: 'pending',
-    confirmationCount: 1, // Proposer auto-approves
+    confirmationCount: 0,
     submittedBy: proposer,
     submittedAtBlock: event.blockNumber,
     submittedAtTx: event.transactionHash,
