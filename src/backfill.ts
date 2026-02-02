@@ -1,3 +1,4 @@
+import { getAddress } from 'quais';
 import { config } from './config.js';
 import { quai } from './services/quai.js';
 import { supabase } from './services/supabase.js';
@@ -36,11 +37,12 @@ async function backfill(): Promise<void> {
   logger.info({ fromBlock, toBlock, totalBlocks: toBlock - fromBlock }, 'Backfill range');
 
   // Track wallets discovered during backfill
-  const trackedWallets: Set<string> = new Set();
+  // Map from lowercase address (for deduplication) to checksummed address (for RPC)
+  const trackedWallets: Map<string, string> = new Map();
 
   // Load existing wallets
   const existingWallets = await supabase.getAllWalletAddresses();
-  existingWallets.forEach((w) => trackedWallets.add(w.toLowerCase()));
+  existingWallets.forEach((w) => trackedWallets.set(w.toLowerCase(), getAddress(w)));
   logger.info({ count: trackedWallets.size }, 'Loaded existing wallets');
 
   await supabase.setIsSyncing(true);
@@ -67,7 +69,7 @@ async function backfill(): Promise<void> {
           await handleEvent(event);
           if (event.name === 'WalletCreated' || event.name === 'WalletRegistered') {
             const walletAddress = event.args.wallet as string;
-            trackedWallets.add(walletAddress.toLowerCase());
+            trackedWallets.set(walletAddress.toLowerCase(), getAddress(walletAddress));
             logger.info({ wallet: walletAddress }, 'Discovered new wallet');
           }
         }
@@ -81,7 +83,7 @@ async function backfill(): Promise<void> {
 
       // Get events from tracked wallets (chunked to avoid RPC limits)
       if (trackedWallets.size > 0) {
-        const walletAddresses = Array.from(trackedWallets);
+        const walletAddresses = Array.from(trackedWallets.values());
 
         // Chunk addresses to avoid RPC provider limits
         for (let i = 0; i < walletAddresses.length; i += GET_LOGS_ADDRESS_CHUNK_SIZE) {

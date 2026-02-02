@@ -1,3 +1,4 @@
+import { getAddress } from 'quais';
 import { config } from './config.js';
 import { quai } from './services/quai.js';
 import { supabase } from './services/supabase.js';
@@ -17,7 +18,8 @@ const GET_LOGS_ADDRESS_CHUNK_SIZE = 100;
 
 export class Indexer {
   private isRunning = false;
-  private trackedWallets: Set<string> = new Set();
+  // Map from lowercase address (for deduplication) to checksummed address (for RPC)
+  private trackedWallets: Map<string, string> = new Map();
 
   async start(): Promise<void> {
     logger.info('Starting indexer...');
@@ -27,7 +29,7 @@ export class Indexer {
 
     // Load tracked wallets
     const wallets = await supabase.getAllWalletAddresses();
-    wallets.forEach((w) => this.trackedWallets.add(w.toLowerCase()));
+    wallets.forEach((w) => this.trackedWallets.set(w.toLowerCase(), getAddress(w)));
     logger.info({ count: this.trackedWallets.size }, 'Loaded tracked wallets');
 
     // Update health service with wallet count
@@ -134,7 +136,7 @@ export class Indexer {
     // 2. Get events from all tracked wallets (chunked to avoid RPC limits)
     // Note: topics must be [[sig1, sig2, ...]] to match ANY signature in topic0
     if (this.trackedWallets.size > 0) {
-      const walletAddresses = Array.from(this.trackedWallets);
+      const walletAddresses = Array.from(this.trackedWallets.values());
 
       // Chunk addresses to avoid RPC provider limits
       for (let i = 0; i < walletAddresses.length; i += GET_LOGS_ADDRESS_CHUNK_SIZE) {
@@ -186,7 +188,7 @@ export class Indexer {
         // Track new wallets from factory events
         if (event.name === 'WalletCreated' || event.name === 'WalletRegistered') {
           const walletAddress = event.args.wallet as string;
-          this.trackedWallets.add(walletAddress.toLowerCase());
+          this.trackedWallets.set(walletAddress.toLowerCase(), getAddress(walletAddress));
           health.setTrackedWalletsCount(this.trackedWallets.size);
         }
         await handleEvent(event);
@@ -218,7 +220,7 @@ export class Indexer {
             // Reload tracked wallets (may have been cleared by database reset)
             const wallets = await supabase.getAllWalletAddresses();
             this.trackedWallets.clear();
-            wallets.forEach((w) => this.trackedWallets.add(w.toLowerCase()));
+            wallets.forEach((w) => this.trackedWallets.set(w.toLowerCase(), getAddress(w)));
             health.setTrackedWalletsCount(this.trackedWallets.size);
 
             await this.backfill(state.lastIndexedBlock + 1, safeBlock);
