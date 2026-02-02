@@ -203,14 +203,21 @@ export class Indexer {
         const currentBlock = await quai.getBlockNumber();
         const safeBlock = currentBlock - config.indexer.confirmations;
 
-        if (state.lastIndexedBlock < safeBlock) {
-          const blocksToIndex = safeBlock - state.lastIndexedBlock;
+        // Honor START_BLOCK config (e.g., after database reset)
+        const startBlock = Math.max(
+          state.lastIndexedBlock + 1,
+          config.indexer.startBlock
+        );
+
+        if (startBlock <= safeBlock) {
+          const blocksToIndex = safeBlock - startBlock + 1;
 
           // If gap exceeds batch size, use backfill (handles database resets)
           if (blocksToIndex > config.indexer.batchSize) {
             logger.info(
               {
                 lastIndexed: state.lastIndexedBlock,
+                startBlock,
                 safeBlock,
                 blocksToIndex,
               },
@@ -223,9 +230,9 @@ export class Indexer {
             wallets.forEach((w) => this.trackedWallets.set(w.toLowerCase(), getAddress(w)));
             health.setTrackedWalletsCount(this.trackedWallets.size);
 
-            await this.backfill(state.lastIndexedBlock + 1, safeBlock);
+            await this.backfill(startBlock, safeBlock);
           } else {
-            await this.indexBlockRange(state.lastIndexedBlock + 1, safeBlock);
+            await this.indexBlockRange(startBlock, safeBlock);
             await supabase.updateIndexerState(safeBlock);
           }
         }
