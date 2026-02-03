@@ -573,6 +573,26 @@ BEGIN
     EXCEPTION WHEN duplicate_object THEN NULL;
     END;
 
+    BEGIN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I.daily_limit_state', schema_name);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I.whitelist_entries', schema_name);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I.social_recovery_configs', schema_name);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I.social_recovery_guardians', schema_name);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+
     RAISE NOTICE 'Schema "%" created successfully with all tables, indexes, triggers, policies, permissions, and realtime', schema_name;
 END;
 $$ LANGUAGE plpgsql;
